@@ -62,7 +62,7 @@ def handle_client(conn, addr):
                 history[topic].append(message)
 
                 if topic not in topics:
-                    topics[topic] = []  # <-- Adiciona o tópico, mesmo que ninguém esteja inscrito ainda
+                    topics[topic] = []  
 
                 if topic in topics:
                     pacote = {
