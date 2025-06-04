@@ -1,35 +1,94 @@
 import socket
 import threading
+import json
 
-clients = {}
+clients = {} 
 topics = {}
+history = {}  
+
+def enviar_json(conn, data):
+    try:
+        mensagem = json.dumps(data).encode()
+        conn.sendall(mensagem)
+    except Exception as e:
+        print(f"[ERRO] Falha ao enviar mensagem: {e}")
+
+def enviar_historico(conn, topic):
+    if topic in history:
+        for msg in history[topic]:
+            pacote = {
+                "command": "HISTORY",
+                "topic": topic,
+                "message": msg
+            }
+            enviar_json(conn, pacote)
 
 def handle_client(conn, addr):
     print(f"[BROKER] Nova conexão de {addr}")
+    clients[conn] = addr
+
+    initial_message = {
+        "command": "TOPICS_LIST",
+        "topics": list(topics.keys())
+    }
+    enviar_json(conn, initial_message)
+
     try:
         while True:
+            print("Digite 'exit' para encerrar a conexão.")
+            
             data = conn.recv(1024).decode()
             if not data:
+                print(f"[BROKER] Conexão encerrada por {addr}")
                 break
-            command, topic, *msg = data.split(" ", 2)
-            message = msg[0] if msg else ""
+
+            packet = json.loads(data)
+            command = packet.get("command")
+            topic = packet.get("topic")
+            message = packet.get("message", "")
 
             if command == "SUBSCRIBE":
                 if topic not in topics:
                     topics[topic] = []
-                topics[topic].append(conn)
-                print(f"[BROKER] {addr} se inscreveu no tópico '{topic}'")
+                if conn not in topics[topic]:
+                    topics[topic].append(conn)
+                print(f"[BROKER] {addr} assinou o tópico '{topic}'")
+
+                enviar_historico(conn, topic)
+
             elif command == "PUBLISH":
+                if topic not in history:
+                    history[topic] = []
+                history[topic].append(message)
+
+                if topic not in topics:
+                    topics[topic] = []  # <-- Adiciona o tópico, mesmo que ninguém esteja inscrito ainda
+
                 if topic in topics:
-                    for subscriber in topics[topic]:
+                    pacote = {
+                        "command": "MESSAGE",
+                        "topic": topic,
+                        "message": message
+                    }
+                    assinantes = topics[topic].copy()
+                    for subscriber in assinantes:
                         try:
-                            subscriber.send(f"{topic}: {message}".encode())
-                        except:
+                            enviar_json(subscriber, pacote)
+                        except Exception:
+                            print(f"[BROKER] Removendo assinante inativo {clients.get(subscriber)} do tópico '{topic}'")
                             topics[topic].remove(subscriber)
-                    print(f"[BROKER] Mensagem enviada em '{topic}': {message}")
+
+                print(f"[BROKER] Mensagem publicada em '{topic}': {message}")
+
     except Exception as e:
-        print(f"[ERRO] {e}")
+        print(f"[ERRO] {addr} - {e}")
+    
     finally:
+        print(f"[BROKER] Conexão finalizada com {addr}")
+        for t, subs in topics.items():
+            if conn in subs:
+                subs.remove(conn)
+        clients.pop(conn, None)
         conn.close()
 
 def start_broker():
@@ -40,7 +99,7 @@ def start_broker():
 
     while True:
         conn, addr = server.accept()
-        thread = threading.Thread(target=handle_client, args=(conn, addr))
+        thread = threading.Thread(target=handle_client, args=(conn, addr), daemon=True)
         thread.start()
 
 if __name__ == "__main__":
